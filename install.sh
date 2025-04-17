@@ -24,6 +24,13 @@ echo 'libc6 libraries/restart-without-asking boolean true' | sudo debconf-set-se
 echo 'libssl1.1 libraries/restart-without-asking boolean true' | sudo debconf-set-selections
 echo 'libssl3 libraries/restart-without-asking boolean true' | sudo debconf-set-selections
 
+# Konfigurasi needrestart untuk auto-restart tanpa prompt
+sudo mkdir -p /etc/needrestart/conf.d
+sudo tee /etc/needrestart/conf.d/no-prompt.conf > /dev/null << 'EOF'
+nrconf{restart} = 'a';
+nrconf{blacklist_rc} = qr(^/etc/needrestart/restart.d/.*$);
+EOF
+
 # Tambahkan opsi ke apt.conf untuk mencegah prompt konfigurasi
 sudo tee /etc/apt/apt.conf.d/99custom-settings > /dev/null << 'EOF'
 APT::Get::Assume-Yes "true";
@@ -44,17 +51,20 @@ Dir::Etc::SourceList "";
 quiet "1";
 EOF
 
-# LANGKAH 2: Update dan Upgrade sistem
+# LANGKAH 2: Tambahkan repository NodeSource untuk Node.js
+echo "🔄 Setting up NodeSource repository..."
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+
+# LANGKAH 3: Update dan Upgrade sistem
 echo "🔄 Updating package lists..."
 sudo apt-get update -y -qq
 
 echo "🔄 Upgrading packages..."
-# Kita gunakan Yes | sudo apt-get... untuk memastikan tidak ada prompt
 yes | sudo DEBIAN_PRIORITY=critical apt-get -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
 
-# LANGKAH 3: Install Node.js dan npm
+# LANGKAH 4: Install Node.js dan npm
 echo "🔄 Installing Node.js and npm..."
-sudo apt-get install -qq -y nodejs npm
+sudo apt-get install -qq -y nodejs
 
 # Periksa apakah Node.js dan npm berhasil diinstall
 if command -v node &> /dev/null && command -v npm &> /dev/null; then
@@ -67,7 +77,7 @@ else
     exit 1
 fi
 
-# LANGKAH 4: Install required npm modules
+# LANGKAH 5: Install required npm modules
 echo "🔄 Installing npm modules: hpack, socks, colors, node-fetch@2, axios, http2-wrapper..."
 npm config set yes true
 npm_output=$(npm install hpack socks colors node-fetch@2 axios http2-wrapper 2>&1)
@@ -77,10 +87,11 @@ if [ $? -eq 0 ]; then
     modules_status="✅ Semua modul berhasil diinstall"
 else
     echo "❌ Failed to install npm modules. Exiting..."
+    echo "Error details: $npm_output"
     exit 1
 fi
 
-# LANGKAH 5: Download script dari GitHub
+# LANGKAH 6: Download script dari GitHub
 echo "🔄 Downloading scripts from GitHub..."
 
 # Download script-script dari repository langsung ke direktori saat ini
@@ -106,12 +117,13 @@ else
     scripts_status="⚠️ Beberapa script gagal didownload"
 fi
 
-# LANGKAH 6: Cleanup setelah instalasi
+# LANGKAH 7: Cleanup setelah instalasi
 echo "🔄 Cleaning up..."
 sudo apt-get clean -qq
 
-# Reset konfigurasi apt.conf
+# Reset konfigurasi apt.conf dan needrestart
 sudo rm -f /etc/apt/apt.conf.d/99custom-settings
+sudo rm -f /etc/needrestart/conf.d/no-prompt.conf
 
 # Hitung waktu yang diperlukan
 end_time=$(date +%s)
