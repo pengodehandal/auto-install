@@ -8,6 +8,26 @@ print_header() {
     echo ""
 }
 
+# Fungsi untuk menunggu dan melepaskan lock apt
+release_apt_lock() {
+    echo "🔄 Checking for apt lock..."
+    for i in {1..5}; do
+        if sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+            echo "   - Apt lock detected, waiting... (Attempt $i/5)"
+            sleep 5
+        else
+            echo "   - No apt lock detected, proceeding..."
+            return 0
+        fi
+    done
+    echo "❌ Apt lock still held. Attempting to kill locking process..."
+    sudo kill -9 $(sudo fuser /var/lib/apt/lists/lock 2>/dev/null) 2>/dev/null
+    sudo kill -9 $(sudo fuser /var/lib/dpkg/lock-frontend 2>/dev/null) 2>/dev/null
+    sudo dpkg --configure -a
+    sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend
+    echo "   - Lock released, proceeding..."
+}
+
 # Simpan waktu mulai
 start_time=$(date +%s)
 
@@ -27,8 +47,7 @@ echo 'libssl3 libraries/restart-without-asking boolean true' | sudo debconf-set-
 # Konfigurasi needrestart untuk auto-restart tanpa prompt
 sudo mkdir -p /etc/needrestart/conf.d
 sudo tee /etc/needrestart/conf.d/no-prompt.conf > /dev/null << 'EOF'
-nrconf{restart} = 'a';
-nrconf{blacklist_rc} = qr(^/etc/needrestart/restart.d/.*$);
+$nrconf{restart} = 'a';
 EOF
 
 # Tambahkan opsi ke apt.conf untuk mencegah prompt konfigurasi
@@ -53,18 +72,35 @@ EOF
 
 # LANGKAH 2: Tambahkan repository NodeSource untuk Node.js
 echo "🔄 Setting up NodeSource repository..."
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+release_apt_lock
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash - || {
+    echo "❌ Failed to set up NodeSource repository. Exiting..."
+    exit 1
+}
 
 # LANGKAH 3: Update dan Upgrade sistem
 echo "🔄 Updating package lists..."
-sudo apt-get update -y -qq
+release_apt_lock
+for i in {1..3}; do
+    sudo apt-get update -y -qq && break
+    echo "   - Failed to update package lists (Attempt $i/3). Retrying..."
+    sleep 2
+done
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to update package lists after retries. Exiting..."
+    exit 1
+fi
 
 echo "🔄 Upgrading packages..."
 yes | sudo DEBIAN_PRIORITY=critical apt-get -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" dist-upgrade
 
 # LANGKAH 4: Install Node.js dan npm
 echo "🔄 Installing Node.js and npm..."
-sudo apt-get install -qq -y nodejs
+release_apt_lock
+sudo apt-get install -qq -y nodejs || {
+    echo "❌ Failed to install Node.js. Exiting..."
+    exit 1
+}
 
 # Periksa apakah Node.js dan npm berhasil diinstall
 if command -v node &> /dev/null && command -v npm &> /dev/null; then
